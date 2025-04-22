@@ -1,14 +1,47 @@
+import requests
 import os
 import openai
+import os
+from openai import OpenAI
 from flask import Flask, render_template, request, redirect, url_for, session, flash
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy.orm import relationship
 from werkzeug.security import generate_password_hash, check_password_hash
 
+from dotenv import load_dotenv
+
+load_dotenv()  # take environment variables from .env.
+
+def fetch_moodle_courses():
+    """
+    Fetch all courses from Moodle using the web service token
+    and return them as a list of dictionaries.
+    """
+    moodle_url = os.environ.get("MOODLE_URL", "https://your-moodle.com")
+    moodle_token = os.environ.get("MOODLE_TOKEN", "your_moodle_token")
+    
+    # Moodle endpoint
+    endpoint = f"{moodle_url}/webservice/rest/server.php"
+    
+    # Example function name to get ALL courses
+    function_name = "core_course_get_courses"  
+    
+    params = {
+        "wstoken": moodle_token,
+        "wsfunction": function_name,
+        "moodlewsrestformat": "json",
+    }
+
+    response = requests.get(endpoint, params=params)
+    response.raise_for_status()  # Raise HTTPError if the request failed
+    courses_data = response.json()
+    
+    return courses_data
+
 ###############################################################################
 # Configuration & Initialization
 ###############################################################################
-app = Flask(_name_)
+app = Flask(__name__)
 
 # For security, load secret key & API key from environment or config
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'replace_with_secure_key')
@@ -17,14 +50,16 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # Initialize the DB and OpenAI
 db = SQLAlchemy(app)
-openai.api_key = os.environ.get('OPENAI_API_KEY', 'YOUR-OPENAI-API-KEY')
+client = OpenAI(
+    api_key=os.environ.get('OPENAI_API_KEY', )
+)
 
 
 ###############################################################################
 # Database Models
 ###############################################################################
 class User(db.Model):
-    _tablename_ = 'users'
+    __tablename__ = 'users'
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(50), unique=True, nullable=False)
     password_hash = db.Column(db.String(128), nullable=False)
@@ -35,21 +70,21 @@ class User(db.Model):
         return check_password_hash(self.password_hash, password)
 
 class Course(db.Model):
-    _tablename_ = 'courses'
+    __tablename__ = 'courses'
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(100), nullable=False)
     description = db.Column(db.Text, nullable=False)
     modules = relationship('Module', backref='course', cascade="all, delete-orphan")
 
 class Module(db.Model):
-    _tablename_ = 'modules'
+    __tablename__ = 'modules'
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(100), nullable=False)
     content = db.Column(db.Text, nullable=False)
     course_id = db.Column(db.Integer, db.ForeignKey('courses.id'))
 
 class QuizQuestion(db.Model):
-    _tablename_ = 'quiz_questions'
+    __tablename__ = 'quiz_questions'
     id = db.Column(db.Integer, primary_key=True)
     question = db.Column(db.Text, nullable=False)
     options = db.Column(db.Text, nullable=False)      # Store multiple options as JSON or comma-separated
@@ -57,7 +92,7 @@ class QuizQuestion(db.Model):
     module_id = db.Column(db.Integer, db.ForeignKey('modules.id'))
 
 class QuizAttempt(db.Model):
-    _tablename_ = 'quiz_attempts'
+    __tablename__ = 'quiz_attempts'
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'))
     module_id = db.Column(db.Integer, db.ForeignKey('modules.id'))
@@ -67,9 +102,9 @@ class QuizAttempt(db.Model):
 ###############################################################################
 # Database Setup Helper (Run once to create DB)
 ###############################################################################
-@app.before_first_request
-def create_tables():
-    db.create_all()
+# @app._got_first_request
+# def create_tables():
+#     db.create_all()
 
 
 ###############################################################################
@@ -87,7 +122,7 @@ def admin_required(func):
             flash("Admin rights required.", "danger")
             return redirect(url_for('index'))
         return func(*args, **kwargs)
-    wrapper._name_ = func._name_
+    wrapper.__name__ = func.__name__
     return wrapper
 
 
@@ -102,7 +137,7 @@ def student_required(func):
             flash("Student account required.", "danger")
             return redirect(url_for('index'))
         return func(*args, **kwargs)
-    wrapper._name_ = func._name_
+    wrapper.__name__ = func.__name__
     return wrapper
 
 
@@ -111,56 +146,64 @@ def generate_quiz_questions(module_content, num_questions=5):
     Uses OpenAI to generate multiple-choice quiz questions
     based on the module's content.
     """
-    prompt = f"""
-    You are an educational AI system. Based on the following content:
 
-    {module_content}
+    messages = [
+        {"role": "system", "content": "You are an educational AI system."},
+        {"role": "user", "content": f"""
+        Based on the following content:
 
-    Generate {num_questions} multiple-choice quiz questions. 
-    Each question should have 4 distinct options (A, B, C, D), 
-    and indicate which option is correct in this format:
+        {module_content}
 
-    1) Question text
-    A) ...
-    B) ...
-    C) ...
-    D) ...
-    Correct answer: X
+        Generate {num_questions} multiple-choice quiz questions. 
+        Each question should have 4 distinct options (A, B, C, D), 
+        and indicate which option is correct in this format:
 
-    Provide them in a plain text format.
-    """
-    response = openai.Completion.create(
-        model="text-davinci-003",
-        prompt=prompt,
-        max_tokens=700,
-        temperature=0.7
+        1) Question text
+        A) ...
+        B) ...
+        C) ...
+        D) ...
+        Correct answer: X
+
+        Provide them in a plain text format.
+        """}
+    ]
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
+        max_tokens=700
     )
-    return response.choices[0].text.strip()
 
+    return response.choices[0].message.content.strip()
 
 def generate_adaptive_response(course_content, student_question):
     """
     Uses OpenAI to provide an adaptive learning response 
     based on the course content and student's question.
     """
-    prompt = f"""
-    You are a tutoring AI. The course content is:
-    
-    {course_content}
+    # client = OpenAI()
 
-    The student asks: {student_question}
+    messages = [
+        {"role": "system", "content": "You are a tutoring AI. Your goal is to provide clear, informative, and concise explanations based on the provided course content."},
+        {"role": "user", "content": f"""
+        The course content is:
 
-    Provide an informative, concise, and helpful explanation 
-    that directly addresses the question using the course content.
-    """
-    response = openai.Completion.create(
-        model="text-davinci-003",
-        prompt=prompt,
+        {course_content}
+
+        The student asks: {student_question}
+
+        Provide an explanation that directly addresses the student's question using the course content.
+        """}
+    ]
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=messages,
         max_tokens=400,
-        temperature=0.7
     )
-    return response.choices[0].text.strip()
 
+    return response.choices[0].message.content.strip()
 
 ###############################################################################
 # Routes - Authentication
@@ -316,20 +359,53 @@ def generate_quiz(module_id):
     flash("Quiz generated successfully!", "success")
     return redirect(url_for('admin_course_detail', course_id=module.course_id))
 
+# @app.route('/admin/analytics')
+# @admin_required
+# def analytics():
+#     # Basic analytics: average scores per module
+#     all_modules = Module.query.all()
+#     module_scores = {}
+#     for m in all_modules:
+#         attempts = QuizAttempt.query.filter_by(module_id=m.id).all()
+#         if attempts:
+#             avg_score = sum(a.score for a in attempts) / len(attempts)
+#             module_scores[m.title] = round(avg_score, 2)
+#         else:
+#             module_scores[m.title] = None
+#     return render_template('analytics.html', module_scores=module_scores)
+
+
 @app.route('/admin/analytics')
 @admin_required
 def analytics():
-    # Basic analytics: average scores per module
+    # Basic analytics for each module
     all_modules = Module.query.all()
-    module_scores = {}
+    
+    module_data = []
     for m in all_modules:
         attempts = QuizAttempt.query.filter_by(module_id=m.id).all()
+        
         if attempts:
-            avg_score = sum(a.score for a in attempts) / len(attempts)
-            module_scores[m.title] = round(avg_score, 2)
+            scores = [a.score for a in attempts]
+            avg_score = sum(scores) / len(scores)
+            max_score = max(scores)
+            min_score = min(scores)
+            attempts_count = len(scores)
         else:
-            module_scores[m.title] = None
-    return render_template('analytics.html', module_scores=module_scores)
+            avg_score = None
+            max_score = None
+            min_score = None
+            attempts_count = 0
+
+        module_data.append({
+            "title": m.title,
+            "avg_score": round(avg_score, 2) if avg_score is not None else None,
+            "max_score": round(max_score, 2) if max_score is not None else None,
+            "min_score": round(min_score, 2) if min_score is not None else None,
+            "attempts_count": attempts_count,
+        })
+    
+    return render_template('analytics.html', module_data=module_data)
 
 
 ###############################################################################
@@ -397,253 +473,132 @@ def student_quiz(module_id):
 ###############################################################################
 # TEMPLATES (Inline for Demo)
 ###############################################################################
-# In production, put these in a "templates" folder. 
-# For demonstration, we'll use inline multi-line strings.
+import os
+import requests
+from flask import render_template, redirect, url_for, flash
+# from yourapp import app, db  # Adjust according to your application structure
+# from yourapp.models import Course  # Import your Course model
+# from yourapp.utils import import_modules_for_course  # Assuming you put the helper function in utils.py
 
-from flask import make_response
-
-@app.route('/inline_template/<string:template_name>')
-def inline_template(template_name):
+def import_modules_for_course(moodle_course_id, local_course):
     """
-    This route is purely for demonstration of inline templates.
-    In real usage, place these templates in the templates folder.
+    Given a Moodle course id and a local Course instance,
+    fetch the course contents from Moodle and import modules.
     """
-    templates = {
-        'index.html': """
-        <html>
-        <head><title>LMS Home</title></head>
-        <body>
-            <h1>Welcome to the LMS</h1>
-            <a href="{{ url_for('login') }}">Login</a> | 
-            <a href="{{ url_for('register') }}">Register</a>
-        </body>
-        </html>
-        """,
-        'register.html': """
-        <html>
-        <head><title>Register</title></head>
-        <body>
-            <h1>Register</h1>
-            <form method="POST">
-                <label>Username:</label><br>
-                <input type="text" name="username"><br><br>
-                <label>Password:</label><br>
-                <input type="password" name="password"><br><br>
-                <label>Role:</label><br>
-                <select name="role">
-                    <option value="student">Student</option>
-                    <option value="admin">Admin</option>
-                </select><br><br>
-                <button type="submit">Register</button>
-            </form>
-        </body>
-        </html>
-        """,
-        'login.html': """
-        <html>
-        <head><title>Login</title></head>
-        <body>
-            <h1>Login</h1>
-            <form method="POST">
-                <label>Username:</label><br>
-                <input type="text" name="username"><br><br>
-                <label>Password:</label><br>
-                <input type="password" name="password"><br><br>
-                <button type="submit">Login</button>
-            </form>
-        </body>
-        </html>
-        """,
-        'admin_dashboard.html': """
-        <html>
-        <head><title>Admin Dashboard</title></head>
-        <body>
-            <h1>Admin Dashboard</h1>
-            <p>Welcome, Admin!</p>
-            <a href="{{ url_for('create_course') }}">Create New Course</a><br><br>
-            <h2>All Courses</h2>
-            <ul>
-            {% for c in courses %}
-                <li>
-                    {{ c.title }} 
-                    | <a href="{{ url_for('admin_course_detail', course_id=c.id) }}">Details</a>
-                </li>
-            {% endfor %}
-            </ul>
-            <br>
-            <a href="{{ url_for('analytics') }}">Analytics</a>
-            <br><br>
-            <a href="{{ url_for('logout') }}">Logout</a>
-        </body>
-        </html>
-        """,
-        'create_course.html': """
-        <html>
-        <head><title>Create Course</title></head>
-        <body>
-            <h1>Create Course</h1>
-            <form method="POST">
-                <label>Title:</label><br>
-                <input type="text" name="title"><br><br>
-                <label>Description:</label><br>
-                <textarea name="description"></textarea><br><br>
-                <button type="submit">Create</button>
-            </form>
-        </body>
-        </html>
-        """,
-        'admin_course_detail.html': """
-        <html>
-        <head><title>Course Detail</title></head>
-        <body>
-            <h1>Course: {{ course.title }}</h1>
-            <p>{{ course.description }}</p>
-            <h2>Modules</h2>
-            <ul>
-            {% for m in course.modules %}
-                <li>
-                    {{ m.title }}
-                    | <a href="{{ url_for('generate_quiz', module_id=m.id) }}">Generate Quiz</a>
-                </li>
-            {% endfor %}
-            </ul>
-            <a href="{{ url_for('create_module', course_id=course.id) }}">Add New Module</a>
-            <br><br>
-            <a href="{{ url_for('admin_dashboard') }}">Back to Admin Dashboard</a>
-        </body>
-        </html>
-        """,
-        'create_module.html': """
-        <html>
-        <head><title>Create Module</title></head>
-        <body>
-            <h1>Create Module for {{ course.title }}</h1>
-            <form method="POST">
-                <label>Module Title:</label><br>
-                <input type="text" name="title"><br><br>
-                <label>Content:</label><br>
-                <textarea name="content"></textarea><br><br>
-                <button type="submit">Create</button>
-            </form>
-        </body>
-        </html>
-        """,
-        'analytics.html': """
-        <html>
-        <head><title>Analytics</title></head>
-        <body>
-            <h1>Analytics</h1>
-            <p>Average quiz scores per module:</p>
-            <ul>
-            {% for mod, score in module_scores.items() %}
-                <li>{{ mod }}: {{ score if score else 'No attempts yet' }}</li>
-            {% endfor %}
-            </ul>
-            <br>
-            <a href="{{ url_for('admin_dashboard') }}">Back to Admin Dashboard</a>
-        </body>
-        </html>
-        """,
-        'student_dashboard.html': """
-        <html>
-        <head><title>Student Dashboard</title></head>
-        <body>
-            <h1>Student Dashboard</h1>
-            <h2>All Courses</h2>
-            <ul>
-            {% for c in courses %}
-                <li>
-                    {{ c.title }}
-                    | <a href="{{ url_for('student_course_detail', course_id=c.id) }}">Details</a>
-                </li>
-            {% endfor %}
-            </ul>
-            <br>
-            <a href="{{ url_for('logout') }}">Logout</a>
-        </body>
-        </html>
-        """,
-        'student_course_detail.html': """
-        <html>
-        <head><title>Student Course Detail</title></head>
-        <body>
-            <h1>Course: {{ course.title }}</h1>
-            <p>{{ course.description }}</p>
-            <h2>Modules</h2>
-            <ul>
-            {% for m in course.modules %}
-                <li>
-                    {{ m.title }}
-                    | <a href="{{ url_for('student_module_detail', module_id=m.id) }}">View</a>
-                </li>
-            {% endfor %}
-            </ul>
-            <br>
-            <a href="{{ url_for('student_dashboard') }}">Back to Dashboard</a>
-        </body>
-        </html>
-        """,
-        'student_module_detail.html': """
-        <html>
-        <head><title>Student Module Detail</title></head>
-        <body>
-            <h1>Module: {{ module.title }}</h1>
-            <p>{{ module.content }}</p>
-
-            <h2>Ask a question (Adaptive Learning)</h2>
-            <form method="POST">
-                <textarea name="student_question" rows="3" cols="50" placeholder="Ask about this module..."></textarea><br><br>
-                <button type="submit">Ask</button>
-            </form>
-            {% if adaptive_answer %}
-                <h3>AI's Response:</h3>
-                <p>{{ adaptive_answer }}</p>
-            {% endif %}
-
-            <h2>Quiz Questions</h2>
-            {% if quiz_questions %}
-                <a href="{{ url_for('student_quiz', module_id=module.id) }}">Take Quiz</a>
-            {% else %}
-                <p>No quiz questions yet.</p>
-            {% endif %}
-            <br><br>
-            <a href="{{ url_for('student_course_detail', course_id=module.course_id) }}">Back to Course</a>
-        </body>
-        </html>
-        """,
-        'student_quiz.html': """
-        <html>
-        <head><title>Quiz</title></head>
-        <body>
-            <h1>Quiz for {{ module.title }}</h1>
-            <form method="POST">
-            {% for q in quiz_questions %}
-                <div style="margin-bottom:20px;">
-                    <strong>Question {{ loop.index }}: </strong>{{ q.question }}<br>
-                    {% set opts = q.options.split('|') %}
-                    {% for opt in opts %}
-                        <input type="radio" name="question_{{ q.id }}" value="{{ opt[0:1] }}"> {{ opt }}<br>
-                    {% endfor %}
-                </div>
-            {% endfor %}
-                <button type="submit">Submit Quiz</button>
-            </form>
-        </body>
-        </html>
-        """
+    moodle_url = os.environ.get("MOODLE_URL", "https://your-moodle.com")
+    moodle_token = os.environ.get("MOODLE_TOKEN", "your_moodle_token")
+    endpoint = f"{moodle_url}/webservice/rest/server.php"
+    function_name = "core_course_get_contents"
+    
+    params = {
+        "wstoken": moodle_token,
+        "wsfunction": function_name,
+        "moodlewsrestformat": "json",
+        "courseid": moodle_course_id,
     }
-    html = templates.get(template_name, "<h1>Template not found</h1>")
-    return make_response(html)
+    
+    response = requests.get(endpoint, params=params)
+    response.raise_for_status()
+    sections = response.json()
+
+    print(sections)
+    
+    imported_modules_count = 0
+    # Iterate over each section in the course.
+    for section in sections:
+        # Each section typically contains a list of modules.
+        for module in section.get("modules", []):
+            # Optionally, filter out modules by type:
+            # if module.get("modname") not in ["resource", "assign", "quiz"]:
+            #     continue
+            # Check if a module with the same title already exists for this course.
+            existing_module = Module.query.filter_by(title=module.get("name"), course_id=local_course.id).first()
+            if existing_module:
+                continue  # Skip duplicate modules
+            
+            new_module = Module(
+                title=module.get("name", "Untitled Module"),
+                # Use the module’s description if available; otherwise, fall back to the section summary.
+                content=module.get("description") or section.get("summary", ""),
+                course_id=local_course.id
+            )
+            db.session.add(new_module)
+            imported_modules_count += 1
+    db.session.commit()
+    return imported_modules_count
+
+@app.route('/admin/moodle_import', methods=['GET', 'POST'])
+@admin_required  # Make sure only admins can use this route
+def moodle_import():
+    if os.environ.get("MOODLE_URL") is None or os.environ.get("MOODLE_TOKEN") is None:
+        flash("Moodle configuration is missing in the environment variables.", "danger")
+        return redirect(url_for('admin_dashboard'))
+    
+    if request.method == 'POST':
+        moodle_url = os.environ.get("MOODLE_URL", "https://your-moodle.com")
+        moodle_token = os.environ.get("MOODLE_TOKEN", "your_moodle_token")
+        endpoint = f"{moodle_url}/webservice/rest/server.php"
+        function_name = "core_course_get_courses"
+        
+        params = {
+            "wstoken": moodle_token,
+            "wsfunction": function_name,
+            "moodlewsrestformat": "json",
+        }
+        
+        try:
+            response = requests.get(endpoint, params=params)
+            response.raise_for_status()
+            moodle_courses = response.json()
+        except Exception as e:
+            flash(f"Error fetching courses: {str(e)}", "danger")
+            return redirect(url_for('admin_dashboard'))
+        
+        imported_courses = 0
+        imported_modules = 0
+        
+        for mc in moodle_courses:
+            # Use the Moodle course's 'fullname' for the title and 'summary' for the description.
+            title = mc.get('fullname', 'Untitled')
+            description = mc.get('summary', 'No description provided')
+            
+            # Check if this course already exists locally.
+            existing_course = Course.query.filter_by(title=title).first()
+            if existing_course:
+                local_course = existing_course
+            else:
+                local_course = Course(
+                    title=title,
+                    description=description
+                )
+                db.session.add(local_course)
+                db.session.commit()  # Commit to generate a local course ID.
+                imported_courses += 1
+            
+            # Import modules for this course using its Moodle course id.
+            try:
+                modules_imported = import_modules_for_course(mc.get('id'), local_course)
+                imported_modules += modules_imported
+            except Exception as e:
+                flash(f"Error importing modules for course {local_course.title}: {str(e)}", "warning")
+        
+        flash(f"Imported {imported_courses} new course(s) and {imported_modules} module(s) from Moodle.", "success")
+        return redirect(url_for('admin_dashboard'))
+    
+    # For GET requests, render a simple template with an "Import from Moodle" button.
+    return render_template('moodle_import.html')
+
 
 ###############################################################################
 # Run the Application
 ###############################################################################
-if _name_ == '_main_':
+if __name__ == '__main__':
     # Create DB tables if not exist
-    db.create_all()
-    
-    # Uncomment below if you want to run in debug mode
-    # app.run(debug=True)
+    with app.app_context():
+        db.create_all()
+    app.run()
+      # Uncomment below if you want to run in debug mode
+    app.run(debug=True)
 
     # For a production environment, consider using a production server like Gunicorn.
-    app.run()
+    # app.run()
