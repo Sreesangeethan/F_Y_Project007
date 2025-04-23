@@ -314,7 +314,7 @@ def generate_quiz(module_id):
         flash("Quiz already generated for this module.", "info")
         return redirect(url_for('admin_course_detail', course_id=module.course_id))
 
-    generated_text = generate_quiz_questions(module.content, num_questions=5)
+    generated_text = generate_quiz_questions(module.content, num_questions=10)
     # Parse the response to store questions in DB
     # This parsing is simplistic; you may need more robust parsing in production
     lines = generated_text.split('\n')
