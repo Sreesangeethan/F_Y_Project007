@@ -9,6 +9,64 @@ from sqlalchemy.orm import relationship
 from werkzeug.security import generate_password_hash, check_password_hash
 
 from dotenv import load_dotenv
+from llama_cpp import Llama
+
+# Load the LLaMA model
+llm = Llama(model_path="llama-2-7b-chat.Q4_K_M.gguf", n_ctx=2048)
+
+# Function to generate quiz questions
+def generate_quiz_questions(content, num_questions=5):
+    prompt = f"""
+You are an AI tutor. Based on the following content, generate {num_questions} multiple-choice quiz questions. 
+Each should have 4 options (A, B, C, D), and indicate the correct answer at the end.
+
+Content:
+{content}
+
+Format:
+1) Question text...
+A) Option A
+B) Option B
+C) Option C
+D) Option D
+Correct answer: X
+"""
+    response = llm(prompt, max_tokens=700)
+    return response['choices'][0]['text'].strip()
+
+# Function to provide adaptive explanations
+def generate_adaptive_response(content, student_question):
+    prompt = f"""
+You are an AI tutor. Based on the following course content, explain clearly the answer to the student's question.
+
+Content:
+{content}
+
+Student's question: {student_question}
+
+Answer:
+"""
+    response = llm(prompt, max_tokens=400)
+    return response['choices'][0]['text'].strip()
+
+# Example usage
+if __name__ == "__main__":
+    # Sample course content
+    course_content = """
+Photosynthesis is the process by which green plants and some other organisms use sunlight to synthesize foods from carbon dioxide and water.
+Photosynthesis in plants generally involves the green pigment chlorophyll and generates oxygen as a by-product.
+"""
+
+    # Generate quiz questions
+    quiz = generate_quiz_questions(course_content, num_questions=3)
+    print("=== Quiz Questions ===")
+    print(quiz)
+
+    # Student question
+    question = "Why is chlorophyll important for photosynthesis?"
+    answer = generate_adaptive_response(course_content, question)
+    print("\n=== Adaptive Explanation ===")
+    print(answer)
 
 load_dotenv()  # take environment variables from .env.
 
